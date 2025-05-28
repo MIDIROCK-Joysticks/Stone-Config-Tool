@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MIDI Rock Config Tool (Web)</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+      background: #f7f7f7;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    .header img {
+      max-height: 80px;
+    }
+    .row {
+      margin-bottom: 10px;
+    }
+    label {
+      display: inline-block;
+      width: 120px;
+      font-size: 0.8em;
+      font-weight: bold;
+    }
+    select {
+      width: 60px;
+    }
+    button {
+      margin-left: 10px;
+    }
+    .log, #midiOutput {
+      white-space: pre-wrap;
+      font-family: monospace;
+      border: 1px solid #444;
+      padding: 10px;
+      margin-top: 10px;
+    }
+    #midiOutput {
+      background: #000;
+      color: #0f0;
+      font-size: 1.1em;
+      min-height: 1.5em;
+    }
+    .log {
+      background: #1e1e1e;
+      color: #ddd;
+      height: 220px;
+      overflow-y: auto;
+    }
+    #ccMonitor {
+      margin-top: 20px;
+    }
+    .cc-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .cc-bar-label {
+      width: 80px;
+      font-weight: bold;
+    }
+    .cc-bar-container {
+      flex-grow: 1;
+      background: #ddd;
+      height: 16px;
+      border-radius: 4px;
+      overflow: hidden;
+      position: relative;
+    }
+    .cc-bar-fill {
+      height: 100%;
+      background: #4caf50;
+      width: 0%;
+      transition: width 0.1s ease-out;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <img src="logo.png" alt="Logo" />
+    <div>
+      <h2>MIDI Rock Config Tool (Web)</h2>
+      <button onClick="connectSerial()">🔌 Serial Connect</button>
+      <button onClick="toggleMIDI()" id="midiToggleBtn">🎵 Connect MIDI</button>
+    </div>
+  </div>
+
+  <h3>MIDI Input</h3>
+  <div id="midiOutput">Waiting for MIDI input...</div>
+
+  <div id="ccMonitor">
+    <h3>🎹 CC Monitor</h3>
+    <div id="ccBars"></div>
+  </div>
+
+  <div class="row">
+    <label for="pot">POT CH:</label>
+    <select id="pot"></select>
+    <button onClick="sendChannel('POT')">Set</button>
+  </div>
+  <div class="row">
+    <label for="button">BUTTON CH:</label>
+    <select id="button"></select>
+    <button onClick="sendChannel('BUTTON')">Set</button>
+  </div>
+  <div class="row">
+  <label for="button2">BUTTON 2 CH:</label>
+  <select id="button2"></select>
+  <button onClick="sendChannel('BUTTON2')">Set</button>
+  </div>
+
+  <div class="row">
+    <label for="enc">ENC CH:</label>
+    <select id="enc"></select>
+    <button onClick="sendChannel('ENC')">Set</button>
+  </div>
+  <div class="row">
+    <label for="enc2">ENC2 CH:</label>
+    <select id="enc2"></select>
+    <button onClick="sendChannel('ENC2')">Set</button>
+  </div>
+  <div class="row">
+    <label for="pitch">PITCH CH:</label>
+    <select id="pitch"></select>
+    <button onClick="sendChannel('PITCH')">Set</button>
+  </div>
+  <div class="row">
+    <label for="altjoy">ALT JOY CH:</label>
+    <select id="altjoy"></select>
+    <button onClick="sendChannel('ALT JOY')">Set</button>
+  </div>
+  <div class="row">
+    <label for="bend">BEND MODE:</label>
+    <select id="bend">
+      <option value="0">0 - Roland</option>
+      <option value="1">1 - Korg</option>
+    </select>
+    <button onClick="setBendMode()">Set</button>
+  </div>
+
+  <div class="row">
+    <button onClick="sendAll()">🚀 Send All</button>
+    <button onClick="readConfig()">📡 Read Config</button>
+  </div>
+
+  <div class="log" id="log">Serial log will appear here...</div>
+
+  <script>
+    let port, writer, reader;
+    let midiAccess = null;
+    let midiConnected = false;
+    const ccMap = {};
+
+    function populateDropdowns() {
+      const options = Array.from({ length: 16 }, (_, i) => `<option value="${i + 1}">${i + 1}</option>`).join("");
+      ['pot', 'button', 'button2', 'enc', 'enc2', 'pitch', 'altjoy'].forEach(id => {
+        document.getElementById(id).innerHTML = options;
+      });
+    }
+
+    populateDropdowns();
+
+    function appendLog(html) {
+      const logEl = document.getElementById("log");
+      logEl.innerHTML += html + "<br>";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function logSend(msg) {
+      appendLog(`<span style="color: lightgreen;">[SEND] ${msg}</span>`);
+    }
+
+    function logRecv(msg) {
+      appendLog(`<span style="color: lightblue;">[RECV] ${msg}</span>`);
+    }
+
+    async function connectSerial() {
+      try {
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        logSend("✅ Connected to serial port");
+
+        writer = port.writable.getWriter();
+        reader = port.readable.getReader();
+
+        readSerialLoop();
+      } catch (err) {
+        appendLog(`<span style="color: red;">❌ Serial: ${err}</span>`);
+      }
+    }
+
+    async function readSerialLoop() {
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        try {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          let lines = buffer.split("\n");
+          buffer = lines.pop();
+          lines.forEach(line => {
+            if (line.trim()) {
+              logRecv(line.trim());
+              updateFromReport(line.trim());
+            }
+          });
+        } catch {
+          break;
+        }
+      }
+    }
+
+    async function sendLine(text) {
+      if (!writer) {
+        appendLog(`<span style="color: orange;">⚠️ Not connected to serial.</span>`);
+        return;
+      }
+      const data = new TextEncoder().encode(text + "\n");
+      await writer.write(data);
+      logSend(text);
+    }
+
+    function sendChannel(label) {
+      const value = document.getElementById(label.toLowerCase().replace(" ", "")).value;
+      sendLine(`SET ${label} CH ${value}`);
+    }
+
+    function setBendMode() {
+      const mode = document.getElementById("bend").value;
+      sendLine(`SET BEND MODE ${mode}`);
+    }
+
+    function sendAll() {
+      ['POT', 'BUTTON', 'BUTTON2', 'ENC', 'ENC2', 'PITCH', 'ALT JOY'].forEach(sendChannel);
+      setBendMode();
+    }
+
+    function readConfig() {
+      sendLine("REPORT");
+    }
+
+function updateFromReport(line) {
+  console.log("Parsing line:", line);
+
+  const labelMap = {
+    "Button MIDI Channel set to": "button",
+    "Button2 MIDI Channel set to": "button2",
+    "Pot MIDI Channel set to": "pot",
+    "Encoder MIDI Channel set to": "enc",
+    "Encoder2 MIDI Channel set to": "enc2",
+    "Pitch Bend MIDI Channel set to": "pitch",
+    "Alt Joy MIDI Channel set to": "altjoy",
+    "Bend Mode Set To": "bend"
+  };
+
+  for (const key in labelMap) {
+    if (line.startsWith(key)) {
+      const id = labelMap[key];
+      const value = line.substring(key.length).trim();
+      const dropdown = document.getElementById(id);
+      if (dropdown) {
+        const found = Array.from(dropdown.options).some(opt => opt.value === value);
+        if (found) {
+          dropdown.value = value;
+          console.log(`✅ Set ${id} to ${value}`);
+        } else {
+          console.warn(`⚠️ Value '${value}' not found in #${id}`);
+        }
+      } else {
+        console.warn(`⚠️ Dropdown with id '${id}' not found`);
+      }
+      return;
+    }
+  }
+
+  console.log("No match found for:", line);
+}
+
+
+    const midiOutput = document.getElementById("midiOutput");
+    const ccBars = document.getElementById("ccBars");
+
+    function updateMIDI(text) {
+      midiOutput.textContent = text;
+    }
+
+    function updateCC(cc, val) {
+      let bar = ccMap[cc];
+      if (!bar) {
+        bar = document.createElement("div");
+        bar.className = "cc-bar";
+        bar.innerHTML = `
+          <span class="cc-bar-label">CC#${cc}</span>
+          <div class="cc-bar-container">
+            <div class="cc-bar-fill" id="cc-fill-${cc}"></div>
+          </div>
+        `;
+        ccBars.appendChild(bar);
+        ccMap[cc] = bar;
+      }
+      const fill = document.getElementById(`cc-fill-${cc}`);
+      fill.style.width = `${(val / 127) * 100}%`;
+    }
+
+    function parseMIDIMessage(data) {
+      const status = data[0];
+      const type = status & 0xF0;
+      const channel = (status & 0x0F) + 1;
+      const data1 = data.length > 1 ? data[1] : "?";
+      const data2 = data.length > 2 ? data[2] : "?";
+
+      if (type === 0xB0) updateCC(data1, data2);
+
+      switch (type) {
+        case 0x80: return `Ch ${channel} | Note Off    | Note: ${data1}`;
+        case 0x90: return data2 === 0 ? `Ch ${channel} | Note Off    | Note: ${data1}` : `Ch ${channel} | Note On     | Note: ${data1}`;
+        case 0xB0: return `Ch ${channel} | Control     | CC#: ${data1}  Val: ${data2}`;
+        case 0xC0: return `Ch ${channel} | Program     | Number: ${data1}`;
+        case 0xE0: {
+          const bend = (data2 << 7) | data1;
+          return `Ch ${channel} | Pitch Bend  | Value: ${bend}`;
+        }
+        default: return `Ch ${channel} | Unknown Msg | Raw: ${Array.from(data).join(", ")}`;
+      }
+    }
+
+    async function toggleMIDI() {
+      if (!midiConnected) {
+        try {
+          midiAccess = await navigator.requestMIDIAccess();
+          for (const input of midiAccess.inputs.values()) {
+            input.onmidimessage = (event) => {
+              const msg = parseMIDIMessage(event.data);
+              updateMIDI(msg);
+            };
+          }
+          updateMIDI("✅ MIDI connected. Listening...");
+          document.getElementById("midiToggleBtn").textContent = "🎵 Disconnect MIDI";
+          midiConnected = true;
+        } catch (err) {
+          updateMIDI(`❌ MIDI error: ${err}`);
+        }
+      } else {
+        for (const input of midiAccess.inputs.values()) {
+          input.onmidimessage = null;
+        }
+        updateMIDI("MIDI disconnected.");
+        document.getElementById("midiToggleBtn").textContent = "🎵 Connect MIDI";
+        midiConnected = false;
+      }
+    }
+  </script>
+</body>
+</html>
