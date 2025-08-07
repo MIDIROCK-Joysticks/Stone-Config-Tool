@@ -297,20 +297,23 @@ function updateFromReport(line) {
     function updateCC(cc, val) {
       let bar = ccMap[cc];
       if (!bar) {
-        bar = document.createElement("div");
-        bar.className = "cc-bar";
-        bar.innerHTML = `
-          <span class="cc-bar-label">CC#${cc}</span>
-          <div class="cc-bar-container">
-            <div class="cc-bar-fill" id="cc-fill-${cc}"></div>
-          </div>
-        `;
-        ccBars.appendChild(bar);
-        ccMap[cc] = bar;
-      }
-      const fill = document.getElementById(`cc-fill-${cc}`);
-      fill.style.width = `${(val / 127) * 100}%`;
-    }
+       bar = document.createElement("div");
+       bar.className = "cc-bar";
+       bar.setAttribute("data-cc", cc); // for sorting
+       bar.innerHTML = `
+         <span class="cc-bar-label">CC#${cc}</span>
+         <div class="cc-bar-container">
+           <div class="cc-bar-fill" id="cc-fill-${cc}"></div>
+         </div>
+    `;
+      ccMap[cc] = bar;
+      ccBars.appendChild(bar);
+      sortCCBars();
+  }
+    const fill = document.getElementById(`cc-fill-${cc}`);
+     fill.style.width = `${(val / 127) * 100}%`;
+   }
+
 
     function parseMIDIMessage(data) {
       const status = data[0];
@@ -328,11 +331,42 @@ function updateFromReport(line) {
         case 0xC0: return `Ch ${channel} | Program     | Number: ${data1}`;
         case 0xE0: {
           const bend = (data2 << 7) | data1;
+          updatePitchBend(bend);
           return `Ch ${channel} | Pitch Bend  | Value: ${bend}`;
-        }
+      }
+
         default: return `Ch ${channel} | Unknown Msg | Raw: ${Array.from(data).join(", ")}`;
       }
     }
+
+   function updatePitchBend(value) {
+     let bar = document.getElementById("pb-bar");
+     if (!bar) {
+       bar = document.createElement("div");
+       bar.className = "cc-bar";
+       bar.id = "pb-bar";
+       bar.innerHTML = `
+         <span class="cc-bar-label">Pitch Bend</span>
+         <div class="cc-bar-container">
+           <div class="cc-bar-fill" id="pb-fill"></div>
+         </div>
+       `;
+       // Insert pitch bend bar at the top of ccBars container
+       ccBars.insertBefore(bar, ccBars.firstChild);
+     }
+     const fill = document.getElementById("pb-fill");
+     fill.style.width = `${(value / 16383) * 100}%`;
+   }
+
+
+   function sortCCBars() {
+     const bars = Array.from(ccBars.children)
+       .filter(bar => bar.hasAttribute("data-cc"))
+       .sort((a, b) => parseInt(a.dataset.cc) - parseInt(b.dataset.cc));
+
+     bars.forEach(bar => ccBars.appendChild(bar));
+   }
+
 
     async function toggleMIDI() {
       if (!midiConnected) {
